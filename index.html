@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intercom Web · Régie et Scène</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+:root{--bg:#14171a;--card:#1e2327;--ln:#2e353b;--tx:#e8ecef;--mu:#8d99a3;--ok:#2bb5a0;--wa:#e0a526;--ko:#d7261e;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--ln)}
+h1{font-size:18px;margin:0;flex:1}
+h2{font-size:14px;font-weight:600;color:var(--mu);margin:0 0 8px}
+main{display:grid;grid-template-columns:minmax(300px,390px) 1fr;gap:14px;padding:14px;max-width:1200px;margin:auto}
+@media(max-width:800px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:8px;padding:14px;margin-bottom:14px}
+label{display:block;font-size:12px;color:var(--mu);margin:9px 0 3px}
+select,input,textarea,button{font:inherit;color:var(--tx);background:#12161a;border:1px solid var(--ln);border-radius:6px;padding:7px 9px;width:100%}
+input[type=range]{padding:0}
+textarea{height:64px;font:11px monospace;resize:vertical}
+button{cursor:pointer;width:auto}
+button.p{background:#24655c;border-color:var(--ok)}
+:focus-visible{outline:2px solid var(--wa);outline-offset:2px}
+.vu{height:7px;background:#0c0f11;border-radius:4px;overflow:hidden;margin:8px 0}
+.vu i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--ok),var(--wa) 75%,var(--ko))}
+.buses{display:grid;gap:8px;margin:6px 0}
+.bus{display:grid;grid-template-columns:1fr 92px;gap:6px}
+.bus .t{padding:20px 12px;font-weight:700;font-size:18px;text-align:left;border:1px solid var(--ln);border-left:8px solid var(--c);user-select:none;touch-action:none}
+.bus .t.on{background:var(--c);color:#fff;box-shadow:0 0 20px var(--c)}
+.bus .o{display:flex;flex-direction:column;gap:4px}
+.bus .o *{padding:4px 6px;font-size:12px;width:100%}
+.st{font-size:12px;padding:2px 9px;border-radius:10px;background:#333}
+.st.ok{background:#1d5c52}.st.wa{background:#6b5412}.st.ko{background:#6b1d1a}
+.cl{display:grid;gap:4px}
+.r{display:flex;gap:8px;align-items:center}
+.dot{width:10px;height:10px;border-radius:50%;background:#3a4249}
+.dot.on{background:var(--c);box-shadow:0 0 8px var(--c)}
+small{color:var(--mu)}
+#home{display:grid;place-items:center;min-height:90vh;text-align:center;padding:20px}
+#home h1{font-size:30px;margin-bottom:6px}
+#home button{padding:22px 38px;font-size:18px;margin:8px;width:auto}
+</style></head>
+<body>
+<div id="home"><div>
+<h1>Intercom Web</h1>
+<p style="color:var(--mu);max-width:44ch;margin:0 auto 18px">Push-to-talk par bus, mix-minus et retours plateau sur votre réseau local. Une régie, autant de postes scène que nécessaire.</p>
+<button onclick="startRegie()">Côté régie</button><button onclick="startScene()">Côté scène</button>
+</div></div>
+<div id="app" hidden></div>
+<script>
+const $=(s,r=document)=>r.querySelector(s);
+const h=(t,a={},...k)=>{const e=document.createElement(t);for(const x in a)x.startsWith('on')?e[x]=a[x]:x=='class'?e.className=a[x]:e.setAttribute(x,a[x]);e.append(...k);return e};
+const BUS=[['regie','Régie','#d7261e'],['plateau','Plateau','#2bb5a0'],['vmix','VMix','#e0a526']];
+const ld=(k,d)=>{try{return JSON.parse(localStorage[k])}catch{return d}},sv=(k,v)=>{try{localStorage[k]=JSON.stringify(v)}catch{}};
+const enc=o=>btoa(unescape(encodeURIComponent(JSON.stringify(o)))),dec=s=>JSON.parse(decodeURIComponent(escape(atob(s.trim()))));
+const copy=t=>navigator.clipboard?.writeText(t).catch(()=>{});
+const sink=(a,id)=>a.setSinkId&&a.setSinkId(id||'').catch(()=>{});
+const play=s=>{const a=new Audio();a.srcObject=s;a.play().catch(()=>{});return a};
+const ice=pc=>new Promise(r=>{if(pc.iceGatheringState=='complete')return r();pc.onicegatheringstatechange=()=>pc.iceGatheringState=='complete'&&r();setTimeout(r,2500)});
+const mic=(id,raw)=>navigator.mediaDevices.getUserMedia({audio:{deviceId:id?{exact:id}:undefined,echoCancellation:!raw,noiseSuppression:false,autoGainControl:false,channelCount:1}});
+async function devs(){const d=await navigator.mediaDevices.enumerateDevices();return{i:d.filter(x=>x.kind=='audioinput'),o:d.filter(x=>x.kind=='audiooutput')}}
+const fill=(s,l,def)=>{s.replaceChildren(h('option',{value:''},def),...l.map(x=>h('option',{value:x.deviceId},x.label||x.kind)))};
+async function boot(){if(!navigator.mediaDevices){alert('Micro indisponible : ouvrez ce fichier directement depuis votre disque ou via https.');return false}$('#home').hidden=true;$('#app').hidden=false;return true}
+
+/* VU-mètres */
+const meters=[],unmeter=e=>{const i=meters.indexOf(e);i>=0&&meters.splice(i,1)};
+(function L(){for(const[a,e,b]of meters){a.getFloatTimeDomainData(b);let m=0;for(const v of b)m=Math.max(m,Math.abs(v));e.style.width=Math.min(100,Math.sqrt(m)*100)+'%';e.pk=Math.max(e.pk||0,m)}requestAnimationFrame(L)})();
+function meter(ctx,s,bar){const a=ctx.createAnalyser();a.fftSize=512;ctx.createMediaStreamSource(s).connect(a);const x=[a,bar,new Float32Array(512)];meters.push(x);return x}
+
+/* Boutons de parole : une touche et un mode (PTT, Toggle, Ouvert) par bus */
+function Talk(cb){
+ const cfg=ld('intercom.cfg',{k:{regie:'w',plateau:'x',vmix:'c'},m:{regie:'ptt',plateau:'ptt',vmix:'ptt'}});
+ const st={regie:0,plateau:0,vmix:0},btn={};let on=false,bind=null;
+ const lab=k=>k==' '?'Espace':k.toUpperCase();
+ const set=(b,v)=>{v=on&&v?1:0;if(st[b]===v)return;st[b]=v;btn[b].classList.toggle('on',!!v);cb({...st})};
+ const sync=()=>BUS.forEach(([b])=>set(b,cfg.m[b]=='open'));
+ const down=b=>{const m=cfg.m[b];if(m=='tog')set(b,!st[b]);else if(m=='ptt')set(b,1)};
+ const up=b=>{if(cfg.m[b]=='ptt')set(b,0)};
+ const find=e=>BUS.find(x=>cfg.k[x[0]]==e.key.toLowerCase());
+ addEventListener('keydown',e=>{
+  if(bind){e.preventDefault();cfg.k[bind[0]]=e.key.toLowerCase();bind[1].textContent=lab(cfg.k[bind[0]]);bind=null;sv('intercom.cfg',cfg);return}
+  if(e.repeat||/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;
+  const b=find(e);if(b){e.preventDefault();down(b[0])}});
+ addEventListener('keyup',e=>{const b=find(e);if(b)up(b[0])});
+ const rel=()=>BUS.forEach(([b])=>up(b));
+ addEventListener('blur',rel);document.addEventListener('visibilitychange',()=>document.hidden&&rel());
+ const ui=h('div',{class:'buses'});
+ BUS.forEach(([b,n,c])=>{
+  const t=h('button',{class:'t',onpointerdown:e=>{e.preventDefault();t.setPointerCapture(e.pointerId);down(b)},onpointerup:()=>up(b),onpointercancel:()=>up(b)},n);btn[b]=t;
+  const kb=h('button',{title:'Changer la touche'},lab(cfg.k[b]));kb.onclick=()=>{bind=[b,kb];kb.textContent='…'};
+  const ms=h('select',{},...[['ptt','PTT'],['tog','Toggle'],['open','Ouvert']].map(([v,l])=>{const o=h('option',{value:v},l);o.selected=cfg.m[b]==v;return o}));
+  ms.onchange=()=>{cfg.m[b]=ms.value;sv('intercom.cfg',cfg);set(b,0);sync()};
+  ui.append(h('div',{class:'bus',style:'--c:'+c},t,h('div',{class:'o'},kb,ms)));
+ });
+ return{ui,st,enable(v){on=v;BUS.forEach(([b])=>set(b,0));if(v)sync()},dup:()=>new Set(Object.values(cfg.k)).size<3};
+}
+
+/* ───────── RÉGIE : routage et mix-minus ───────── */
+async function startRegie(){
+ if(!await boot())return;
+ const app=$('#app'),ctx=new AudioContext({latencyHint:'interactive'}),clients=new Map();let n=0;
+ app.innerHTML=`<header><h1>Régie</h1><span class="st ok">Serveur actif</span></header>
+ <main><div>
+ <section class="card"><h2>Mon poste</h2><label>Micro</label><select id="mi"></select><div class="vu"><i id="mv"></i></div><div id="tb"></div>
+ <label>Casque régie (écoute des postes)</label><select id="mo"></select></section>
+ <section class="card"><h2>Sorties physiques</h2><label>Retours plateau</label><select id="op"></select><label>VMix / enregistrement</label><select id="ov"></select></section>
+ <section class="card"><h2>Return programme</h2><label>Entrée audio du programme</label><select id="ri"></select><label>Volume</label><input id="rv" type="range" min="0" max="1.5" step=".05" value="1"></section>
+ </div><div>
+ <section class="card"><h2>Salle</h2><small>Les postes scène rejoignent la régie avec ce code. L'audio passe ensuite directement d'un poste à l'autre.</small>
+ <label>Code de la salle</label><div class="r"><input id="rm" maxlength="20"><button class="p" id="ok">Ouvrir</button></div>
+ <small id="rs"></small><label>Lien à donner aux postes scène</label><div class="r"><input id="lk" readonly><button id="cp">Copier</button></div></section>
+ <section class="card"><h2>Poste hors ligne</h2><small>Pour un réseau local sans internet : collez le code généré par le poste scène, puis renvoyez-lui le code de réponse.</small>
+ <textarea id="mci" placeholder="Code du poste scène"></textarea><p><button id="mok">Accepter le poste</button></p>
+ <label>Code de réponse à renvoyer</label><textarea id="mco" readonly></textarea><p><button id="mcp">Copier</button></p></section>
+ <div id="cls"></div></div></main>`;
+ const mon=ctx.createMediaStreamDestination(),out={plateau:ctx.createMediaStreamDestination(),vmix:ctx.createMediaStreamDestination()};
+ const monA=play(mon.stream),outA={plateau:play(out.plateau.stream),vmix:play(out.vmix.stream)};
+ const my={},ret=ctx.createGain();
+ BUS.forEach(([b])=>{my[b]=ctx.createGain();my[b].gain.value=0});
+ my.plateau.connect(out.plateau);my.vmix.connect(out.vmix);
+ // Le programme baisse de 15 dB dans le casque d'un poste quand on lui parle
+ const duck=()=>{const t=ctx.currentTime;for(const c of clients.values()){const tk=talk.st.regie||[...clients.values()].some(o=>o!==c&&o.st.regie);c.retG.gain.setTargetAtTime((tk&&c.duck?.178:1)*c.vol,t,tk?.04:.5)}};
+ const talk=Talk(s=>{BUS.forEach(([b])=>my[b].gain.setTargetAtTime(s[b],ctx.currentTime,.01));duck()});
+ $('#tb').append(talk.ui);
+ let stream,msrc,ment;
+ async function useMic(id){try{const s=await mic(id);stream?.getTracks().forEach(t=>t.stop());msrc?.disconnect();ment&&unmeter(ment);stream=s;msrc=ctx.createMediaStreamSource(s);BUS.forEach(([b])=>msrc.connect(my[b]));ment=meter(ctx,s,$('#mv'));talk.enable(true)}catch(e){alert('Micro indisponible : '+e.message)}}
+ await useMic();
+ const d=await devs();fill($('#mi'),d.i,'Micro par défaut');['mo','op','ov'].forEach(i=>fill($('#'+i),d.o,'Sortie par défaut'));fill($('#ri'),d.i,'Aucune');
+ $('#mi').onchange=e=>useMic(e.target.value);
+ $('#mo').onchange=e=>sink(monA,e.target.value);$('#op').onchange=e=>sink(outA.plateau,e.target.value);$('#ov').onchange=e=>sink(outA.vmix,e.target.value);
+ let rs,rst;
+ $('#ri').onchange=async e=>{rs?.disconnect();rst?.getTracks().forEach(t=>t.stop());if(!e.target.value)return;try{rst=await mic(e.target.value,1);rs=ctx.createMediaStreamSource(rst);rs.connect(ret)}catch(x){alert(x.message)}};
+ $('#rv').oninput=e=>ret.gain.value=+e.target.value;
+ const L={ok:'En ligne',wa:'Dégradé',ko:'Hors ligne'};
+ const render=c=>{c.nameEl.textContent=c.name;c.stEl.className='st '+c.state;c.stEl.textContent=L[c.state];c.dots.forEach((d,i)=>d.classList.toggle('on',!!c.st[BUS[i][0]]))};
+ const zero=c=>{c.st={regie:0,plateau:0,vmix:0};BUS.forEach(([b])=>c.vb[b]?.gain.setTargetAtTime(0,ctx.currentTime,.01))};
+ function msg(c,m){
+  c.last=Date.now();
+  if(m.t=='hello')c.name=m.name||'Poste';
+  else if(m.t=='p')c.dc?.send({t:'p'});
+  else if(m.t=='ptt'){c.st=m.s;BUS.forEach(([b])=>c.vb[b]?.gain.setTargetAtTime(m.s[b]?1:0,ctx.currentTime,.01));duck()}
+  else if(m.t=='opt'){c.vol=m.v;c.duck=m.d;duck()}
+  render(c)}
+ const get=pid=>{
+  if(clients.has(pid))return clients.get(pid);
+  const c={id:pid,name:'Poste',st:{regie:0,plateau:0,vmix:0},vb:{},mix:ctx.createGain(),retG:ctx.createGain(),dest:ctx.createMediaStreamDestination(),last:Date.now(),vol:1,duck:true,state:'wa'};
+  c.mix.connect(c.dest);c.retG.connect(c.mix);ret.connect(c.retG);my.regie.connect(c.mix);
+  clients.set(pid,c);
+  c.bar=h('i');c.nameEl=h('b');c.stEl=h('span');c.dots=BUS.map(([,nm,col])=>h('span',{class:'dot',title:nm,style:'--c:'+col}));
+  c.card=h('div',{class:'card cl'},h('div',{class:'r'},c.nameEl,c.stEl,h('span',{style:'flex:1'}),h('button',{onclick:()=>drop(pid)},'Retirer')),
+   h('div',{class:'r'},...c.dots.flatMap((x,i)=>[x,h('small',{},BUS[i][1])])),h('div',{class:'vu'},c.bar));
+  $('#cls').append(c.card);render(c);return c};
+ function attach(c,s){
+  if(c.src)return;
+  c.audio=play(s);c.audio.muted=true; // nécessaire à Chrome pour lire un flux distant dans Web Audio
+  c.src=ctx.createMediaStreamSource(s);
+  BUS.forEach(([b])=>{const g=ctx.createGain();g.gain.value=0;c.src.connect(g);g.connect(mon);if(b!='regie')g.connect(out[b]);c.vb[b]=g});
+  c.me=meter(ctx,s,c.bar);
+  // mix-minus : chaque poste entend l'équipe, jamais sa propre voix
+  for(const o of clients.values())if(o!==c&&o.vb.regie){o.vb.regie.connect(c.mix);c.vb.regie.connect(o.mix)}}
+ function drop(id){
+  const c=clients.get(id);if(!c)return;const t=f=>{try{f()}catch{}};
+  t(()=>c.call.close());t(()=>c.dc.close());c.me&&unmeter(c.me);t(()=>c.src.disconnect());
+  Object.values(c.vb).forEach(g=>t(()=>g.disconnect()));
+  for(const o of clients.values())t(()=>o.vb.regie.disconnect(c.mix));
+  t(()=>ret.disconnect(c.retG));t(()=>my.regie.disconnect(c.mix));t(()=>c.mix.disconnect());
+  if(c.audio)c.audio.srcObject=null;c.card.remove();clients.delete(id);duck()}
+ // Mise en relation : le service PeerJS ne sert qu'à la poignée de main, l'audio circule en direct (WebRTC)
+ async function addManual(code){
+  const offer=dec(code),pc=new RTCPeerConnection({iceServers:[]}),c=get('m'+(++n));
+  c.call={close:()=>pc.close()};
+  pc.ondatachannel=e=>{const ch=e.channel;c.dc={send:o=>ch.readyState=='open'&&ch.send(JSON.stringify(o)),close:()=>ch.close()};ch.onmessage=m=>msg(c,JSON.parse(m.data))};
+  pc.ontrack=e=>attach(c,e.streams[0]||new MediaStream([e.track]));
+  pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState))c.last=0};
+  await pc.setRemoteDescription(offer);
+  const tr=pc.getTransceivers().find(t=>t.receiver.track.kind=='audio');
+  tr.direction='sendrecv';await tr.sender.replaceTrack(c.dest.stream.getAudioTracks()[0]);
+  await pc.setLocalDescription(await pc.createAnswer());await ice(pc);
+  return enc(pc.localDescription)}
+ let peer;
+ function open(){
+  if(typeof Peer=='undefined'){$('#rs').textContent='Service en ligne indisponible (pas d\'internet ?) : utilisez la section hors ligne.';return}
+  const code=$('#rm').value.trim().toLowerCase().replace(/[^a-z0-9]/g,'');if(!code)return;
+  sv('intercom.room',code);peer?.destroy();$('#rs').textContent='Connexion au service de mise en relation…';
+  peer=new Peer('ic-'+code);
+  peer.on('open',()=>{$('#rs').textContent='Salle ouverte : '+code;$('#lk').value=location.origin+location.pathname+'?salle='+code});
+  peer.on('error',e=>{$('#rs').textContent=e.type=='unavailable-id'?'Ce code est déjà utilisé : choisissez-en un autre.':'Erreur : '+e.type});
+  peer.on('disconnected',()=>{$('#rs').textContent='Service injoignable, reconnexion…';setTimeout(()=>{try{peer.reconnect()}catch{}},2000)});
+  peer.on('connection',conn=>{const c=get(conn.peer);c.dc=conn;conn.on('data',m=>msg(c,m));conn.on('close',()=>{c.last=0})});
+  peer.on('call',call=>{const c=get(call.peer);c.call=call;call.answer(c.dest.stream);call.on('stream',s=>attach(c,s));call.on('close',()=>{c.last=0})})}
+ $('#rm').value=ld('intercom.room',null)||Math.random().toString(36).slice(2,7);
+ $('#ok').onclick=open;$('#cp').onclick=()=>copy($('#lk').value);open();
+ $('#mok').onclick=async()=>{try{$('#mco').value=await addManual($('#mci').value);$('#mci').value=''}catch(e){alert('Code invalide : '+e.message)}};
+ $('#mcp').onclick=()=>copy($('#mco').value);
+ // Sécurité : sans signe de vie, le poste passe en dégradé puis hors ligne et sa parole est coupée
+ setInterval(()=>{const t=Date.now();for(const c of clients.values()){const a=t-c.last;if(a>30000){drop(c.id);continue}const s=a<3000?'ok':a<6000?'wa':'ko';if(s=='ko'&&c.state!='ko'){zero(c);duck()}c.state=s;render(c)}},1000);
+}
+
+/* ───────── SCÈNE : poste client ───────── */
+async function startScene(){
+ if(!await boot())return;
+ const app=$('#app'),ctx=new AudioContext({latencyHint:'interactive'});
+ app.innerHTML=`<header><h1>Scène</h1><span class="st" id="ss">Au repos</span></header>
+ <main><div>
+ <section class="card"><h2>Connexion à la régie</h2>
+ <label>Mode</label><select id="md"><option value="on">En ligne : code de salle</option><option value="off">Hors ligne : codes à copier</option></select>
+ <label>Nom du poste</label><input id="nm" placeholder="Cadreur 1" maxlength="20">
+ <div id="on"><label>Code de la salle</label><input id="rm" maxlength="20" placeholder="Donné par la régie">
+ <p><button class="p" id="go">Rejoindre la régie</button> <small id="jm"></small></p></div>
+ <div id="off" hidden><p><button id="gen">1. Générer mon code</button></p><textarea id="co" readonly placeholder="Code à envoyer à la régie"></textarea><p><button id="cp">Copier</button></p>
+ <label>2. Code de réponse de la régie</label><textarea id="ci"></textarea><p><button class="p" id="ok">Connecter</button></p></div></section>
+ <section class="card"><h2>Audio</h2><label>Micro</label><select id="mi"></select><div class="vu"><i id="mv"></i></div>
+ <label>Casque</label><select id="ho"></select>
+ <label>Programme (Return) : <span id="rl">100</span> %</label><input id="rv" type="range" min="0" max="1.5" step=".05" value="1">
+ <label class="r"><input id="dk" type="checkbox" checked style="width:auto"> Baisser le programme de 15 dB quand on me parle</label>
+ <p><button id="tst">Tester…</button> <small id="tr"></small></p></section></div>
+ <div><section class="card"><h2>Parler à</h2><div id="tb"></div><small>Maintenez un bouton ou sa touche (PTT), ou changez de mode. Les touches ne fonctionnent que sur cette page.</small></section></div></main>`;
+ let peer,conn,call,stream,vc,ment,last=0,ever=0,was=false,tried=0,manual=0,mpc;
+ const send=o=>{try{conn?.open&&conn.send(o)}catch{}};
+ const talk=Talk(s=>{stream?.getAudioTracks().forEach(t=>t.enabled=BUS.some(([b])=>s[b]));send({t:'ptt',s})});
+ $('#tb').append(talk.ui);
+ const opt=()=>{$('#rl').textContent=Math.round($('#rv').value*100);send({t:'opt',v:+$('#rv').value,d:$('#dk').checked})};
+ $('#rv').oninput=opt;$('#dk').onchange=opt;
+ async function useMic(id){try{
+  const s=await mic(id),on=BUS.some(([b])=>talk.st[b]);
+  stream?.getTracks().forEach(t=>t.stop());vc?.getTracks().forEach(t=>t.stop());ment&&unmeter(ment);
+  stream=s;vc=s.clone();ment=meter(ctx,vc,$('#mv')); // le VU lit une copie : il reste vivant micro coupé
+  const t=s.getAudioTracks()[0];t.enabled=on;call?.peerConnection?.getSenders()[0]?.replaceTrack(t)}catch(e){alert('Micro indisponible : '+e.message)}}
+ const ra=new Audio();ra.autoplay=true;
+ await useMic();
+ const d=await devs();fill($('#mi'),d.i,'Micro par défaut');fill($('#ho'),d.o,'Casque par défaut');
+ $('#mi').onchange=e=>useMic(e.target.value);$('#ho').onchange=e=>sink(ra,e.target.value);
+ $('#rm').value=new URLSearchParams(location.search).get('salle')||ld('intercom.room',null)||'';
+ $('#nm').value=ld('intercom.name','')||'';
+ function join(){
+  if(typeof Peer=='undefined'){$('#jm').textContent='Service en ligne indisponible : passez en mode hors ligne.';return}
+  manual=0;
+  const code=$('#rm').value.trim().toLowerCase().replace(/[^a-z0-9]/g,'');if(!code||!stream)return;
+  sv('intercom.room',code);sv('intercom.name',$('#nm').value);tried=Date.now();last=0;peer?.destroy();$('#jm').textContent='Connexion…';
+  peer=new Peer();
+  peer.on('error',e=>$('#jm').textContent=e.type=='peer-unavailable'?'Salle introuvable : la régie est-elle ouverte avec ce code ?':'Erreur : '+e.type);
+  peer.on('open',()=>{
+   conn=peer.connect('ic-'+code,{reliable:true});
+   conn.on('open',()=>{$('#jm').textContent='';send({t:'hello',name:$('#nm').value||'Poste'});opt()});
+   conn.on('data',()=>{last=Date.now();ever=1});
+   call=peer.call('ic-'+code,stream);
+   call.on('stream',s=>{ra.srcObject=s;ra.play().catch(()=>{})})})}
+ $('#go').onclick=join;
+ $('#md').onchange=e=>{$('#on').hidden=e.target.value!='on';$('#off').hidden=e.target.value=='on'};
+ $('#gen').onclick=async()=>{
+  manual=1;peer?.destroy();mpc?.close();last=0;
+  const pc=mpc=new RTCPeerConnection({iceServers:[]});
+  stream.getAudioTracks().forEach(t=>pc.addTrack(t,stream));
+  const ch=pc.createDataChannel('ctl');
+  conn={get open(){return ch.readyState=='open'},send:o=>ch.send(JSON.stringify(o))};
+  call={peerConnection:pc};
+  ch.onopen=()=>{send({t:'hello',name:$('#nm').value||'Poste'});opt()};
+  ch.onmessage=()=>{last=Date.now();ever=1};
+  pc.ontrack=e=>{ra.srcObject=e.streams[0]||new MediaStream([e.track]);ra.play().catch(()=>{})};
+  await pc.setLocalDescription(await pc.createOffer());await ice(pc);
+  $('#co').value=enc(pc.localDescription)};
+ $('#cp').onclick=()=>copy($('#co').value);
+ $('#ok').onclick=async()=>{try{await mpc.setRemoteDescription(dec($('#ci').value))}catch(e){alert('Code invalide : '+e.message)}};
+ // Aucune prise de parole fantôme : le micro n'est armé que si la liaison est saine
+ setInterval(()=>{
+  send({t:'p'});
+  const a=Date.now()-last,open=conn?.open;
+  const s=!open?(ever?'ko':''):!ever?'wa':a<3000?'ok':a<6000?'wa':'ko',ok=s=='ok';
+  if(ok!=was){was=ok;talk.enable(ok)}
+  if(ever&&!open&&!manual&&Date.now()-tried>6000)join(); // reconnexion automatique après une coupure
+  $('#ss').className='st '+s;$('#ss').textContent={'':'Au repos',ok:'En ligne',wa:'Dégradé',ko:'Hors ligne'}[s]},1000);
+ $('#tst').onclick=async()=>{
+  const r=$('#tr');r.textContent='Parlez pendant 4 secondes…';
+  const o=ctx.createOscillator(),g=ctx.createGain(),dd=ctx.createMediaStreamDestination();
+  g.gain.value=.15;o.frequency.value=880;o.connect(g);g.connect(dd);const a=play(dd.stream);sink(a,$('#ho').value);o.start();o.stop(ctx.currentTime+.6);
+  const b=$('#mv');b.pk=0;await new Promise(x=>setTimeout(x,4000));
+  r.textContent=`Réseau : ${$('#ss').textContent} · Micro : ${b.pk>.02?'OK':'aucun signal'} · Touches : ${talk.dup()?'conflit':'OK'} · Casque : bip envoyé`};
+}
+</script></body></html>
